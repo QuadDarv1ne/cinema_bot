@@ -9,6 +9,7 @@ from aiogram.enums import ParseMode
 from aiohttp import ClientSession
 from dotenv import load_dotenv
 from db import Database
+from cache import Cache
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -20,8 +21,9 @@ OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Инициализация базы данных
+# Инициализация базы данных и кэша
 db = Database()
+cache = Cache()
 
 # Определение состояний
 class BotStates(StatesGroup):
@@ -29,9 +31,22 @@ class BotStates(StatesGroup):
 
 # Вспомогательная функция для получения данных о фильме
 async def fetch_movie_data(query: str) -> dict:
+    # Проверка кэша
+    if cache.has(query):
+        return cache.get(query)
+
     async with ClientSession() as session:
+        # Отправка запроса к OMDB API
         async with session.get(f'http://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}') as response:
-            return await response.json()
+            data = await response.json()
+            
+            if data.get("Response") == "True":
+                # Кэшируем результат, если данные валидны
+                cache.set(query, data)
+                return data
+            else:
+                # Если фильм не найден
+                return {}
 
 # Обработчики команд
 @dp.message(Command("start"))
@@ -71,8 +86,8 @@ async def cmd_stats(message: types.Message):
 async def handle_movie_query(message: types.Message):
     query = message.text
     movie_data = await fetch_movie_data(query)
-    
-    if movie_data.get("Response") == "True":
+
+    if movie_data:
         title = movie_data.get("Title", "Неизвестно")
         year = movie_data.get("Year", "Неизвестно")
         rating = movie_data.get("imdbRating", "Нет рейтинга")
@@ -82,7 +97,7 @@ async def handle_movie_query(message: types.Message):
 
         # Сохранение истории поиска
         db.save_search_history(message.from_user.id, query)
-        
+
         response_text = (
             f"🎬 *{title}* ({year})\n\n"
             f"📊 Рейтинг IMDb: {rating}\n\n"
