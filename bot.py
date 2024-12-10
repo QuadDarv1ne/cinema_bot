@@ -6,10 +6,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientError
 from dotenv import load_dotenv
 from db import Database
-from cache import Cache
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -23,6 +22,20 @@ dp = Dispatcher()
 
 # Инициализация базы данных и кэша
 db = Database()
+
+class Cache:
+    def __init__(self):
+        self.cache = {}
+
+    def has(self, query):
+        return query in self.cache
+
+    def get(self, query):
+        return self.cache.get(query)
+
+    def set(self, query, data):
+        self.cache[query] = data
+
 cache = Cache()
 
 # Определение состояний
@@ -31,22 +44,40 @@ class BotStates(StatesGroup):
 
 # Вспомогательная функция для получения данных о фильме
 async def fetch_movie_data(query: str) -> dict:
-    # Проверка кэша
     if cache.has(query):
         return cache.get(query)
 
-    async with ClientSession() as session:
-        # Отправка запроса к OMDB API
-        async with session.get(f'http://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}') as response:
-            data = await response.json()
-            
-            if data.get("Response") == "True":
-                # Кэшируем результат, если данные валидны
-                cache.set(query, data)
-                return data
-            else:
-                # Если фильм не найден
-                return {}
+    try:
+        async with ClientSession() as session:
+            async with session.get(f'http://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}') as response:
+                response.raise_for_status()
+                data = await response.json()
+
+                if data.get("Response") == "True":
+                    cache.set(query, data)
+                    return data
+                else:
+                    logging.warning(f"Фильм не найден: {query}")
+    except ClientError as e:
+        logging.error(f"Ошибка сети: {e}")
+    except Exception as e:
+        logging.error(f"Ошибка при получении данных о фильме: {e}")
+    return {}
+
+# Подготовка текста ответа о фильме
+def format_movie_response(movie_data: dict) -> str:
+    title = movie_data.get("Title", "Неизвестно")
+    year = movie_data.get("Year", "Неизвестно")
+    rating = movie_data.get("imdbRating", "Нет рейтинга")
+    plot = movie_data.get("Plot", "Описание отсутствует")
+    link = f"https://www.imdb.com/title/{movie_data.get('imdbID', '')}"
+
+    return (
+        f"🎬 *{title}* ({year})\n\n"
+        f"📊 Рейтинг IMDb: {rating}\n\n"
+        f"📜 Сюжет: {plot}\n\n"
+        f"🔗 [Ссылка на IMDb]({link})"
+    )
 
 # Обработчики команд
 @dp.message(Command("start"))
@@ -70,7 +101,7 @@ async def cmd_history(message: types.Message):
     user_id = message.from_user.id
     history = db.get_search_history(user_id)
     if history:
-        history_text = "\n".join([f"{i+1}. {query}" for i, query in enumerate(history)])
+        history_text = "\n".join([f"{i + 1}. {query}" for i, query in enumerate(history)])
         await message.reply(f"Ваши последние 10 поисков:\n{history_text}")
     else:
         await message.reply("Ваша история поиска пуста.")
@@ -84,26 +115,14 @@ async def cmd_stats(message: types.Message):
 # Основной обработчик сообщений
 @dp.message(F.text)
 async def handle_movie_query(message: types.Message):
-    query = message.text
+    query = message.text.strip()
     movie_data = await fetch_movie_data(query)
 
     if movie_data:
-        title = movie_data.get("Title", "Неизвестно")
-        year = movie_data.get("Year", "Неизвестно")
-        rating = movie_data.get("imdbRating", "Нет рейтинга")
+        response_text = format_movie_response(movie_data)
         poster = movie_data.get("Poster", "")
-        plot = movie_data.get("Plot", "Описание отсутствует")
-        link = f"https://www.imdb.com/title/{movie_data.get('imdbID', '')}"
 
-        # Сохранение истории поиска
         db.save_search_history(message.from_user.id, query)
-
-        response_text = (
-            f"🎬 *{title}* ({year})\n\n"
-            f"📊 Рейтинг IMDb: {rating}\n\n"
-            f"📜 Сюжет: {plot}\n\n"
-            f"🔗 [Ссылка на IMDb]({link})"
-        )
 
         if poster and poster != "N/A":
             await message.reply_photo(poster, caption=response_text, parse_mode=ParseMode.MARKDOWN)
@@ -115,8 +134,8 @@ async def handle_movie_query(message: types.Message):
 # Обработчик ошибок
 @dp.errors()
 async def error_handler(update: types.Update, exception: Exception):
-    logging.error(f"Обновление {update} вызвало ошибку {exception}")
-    if update.message:
+    logging.error(f"Обновление {update} вызвало ошибку: {exception}")
+    if hasattr(update, 'message'):
         await update.message.reply("Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже.")
 
 # Основная функция для запуска бота
