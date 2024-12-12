@@ -2,12 +2,13 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiohttp import ClientSession, ClientError
 from dotenv import load_dotenv
 from db import Database
+import random
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -22,6 +23,7 @@ dp = Dispatcher()
 # Инициализация базы данных
 db = Database()
 
+# Кэширование с использованием timedelta
 class Cache:
     def __init__(self, expiration: timedelta = timedelta(minutes=10)):
         self.cache = {}
@@ -92,27 +94,30 @@ def format_movie_response(movie_data: dict) -> str:
         f"\n🔗 [Ссылка на IMDb]({link})"
     )
 
-# Обработчики команд
+# Команды бота
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.reply("Добро пожаловать! Я могу помочь вам найти информацию о фильмах и сериалах. Просто напишите название.")
+    await message.reply("Привет! Я помогу найти фильмы и сериалы. Напиши название, и я постараюсь найти информацию.")
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     help_text = (
-        "Вот как использовать этого бота:\n"
+        "Вот как использовать меня:\n"
         "/start - Начать работу с ботом\n"
         "/help - Показать это сообщение помощи\n"
         "/history - Показать вашу историю поиска\n"
-        "/stats - Показать вашу статистику поиска\n"
-        "Просто напишите название фильма или сериала, чтобы найти информацию!"
+        "/stats - Статистика ваших поисков\n"
+        "/random - Случайный фильм или сериал\n"
+        "/search <название> - Найти фильм по названию\n"
+        "/clearhistory - Очистить историю поиска\n"
+        "/quote - Случайная цитата о кино\n"
     )
     await message.reply(help_text)
 
 @dp.message(Command("history"))
 async def cmd_history(message: types.Message):
     user_id = message.from_user.id
-    history = await asyncio.get_event_loop().run_in_executor(None, db.get_search_history, user_id)
+    history = await db.get_search_history(user_id)
     if history:
         history_text = "\n".join([f"{i + 1}. {query}" for i, query in enumerate(history)])
         await message.reply(f"Ваши последние 10 поисков:\n{history_text}")
@@ -122,34 +127,68 @@ async def cmd_history(message: types.Message):
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     user_id = message.from_user.id
-    count = await asyncio.get_event_loop().run_in_executor(None, db.get_user_stats, user_id)
+    count = await db.get_user_stats(user_id)
     await message.reply(f"Вы искали информацию о {count} фильмах или сериалах.")
 
-# Основной обработчик сообщений
-@dp.message(F.text)
-async def handle_movie_query(message: types.Message):
-    query = message.text.strip()
-    movie_data = await fetch_movie_data(query)
-
+@dp.message(Command("random"))
+async def cmd_random(message: types.Message):
+    random_movies = ["The Shawshank Redemption", "The Godfather", "The Dark Knight", "Forrest Gump", "Inception"]
+    random_movie = random.choice(random_movies)
+    movie_data = await fetch_movie_data(random_movie)
+    
     if movie_data:
         response_text = format_movie_response(movie_data)
         poster = movie_data.get("Poster", "")
+        if poster and poster != "N/A":
+            await message.reply_photo(poster, caption=response_text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await message.reply(response_text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await message.reply("Не удалось получить данные о случайном фильме.")
 
-        await asyncio.get_event_loop().run_in_executor(None, db.save_search_history, message.from_user.id, query)
+@dp.message(Command("search"))
+async def cmd_search(message: types.Message):
+    query = message.text[8:].strip()
+    if not query:
+        await message.reply("Пожалуйста, введите название фильма или сериала.")
+        return
+
+    movie_data = await fetch_movie_data(query)
+    if movie_data:
+        response_text = format_movie_response(movie_data)
+        poster = movie_data.get("Poster", "")
+        await db.save_search_history(message.from_user.id, query)
 
         if poster and poster != "N/A":
             await message.reply_photo(poster, caption=response_text, parse_mode=ParseMode.MARKDOWN)
         else:
             await message.reply(response_text, parse_mode=ParseMode.MARKDOWN)
     else:
-        await message.reply("Я не смог найти информацию об этом фильме или сериале. Попробуйте уточнить запрос.")
+        await message.reply("Не удалось найти фильм. Попробуйте другой запрос.")
+
+@dp.message(Command("clearhistory"))
+async def cmd_clearhistory(message: types.Message):
+    user_id = message.from_user.id
+    await db.clear_search_history(user_id)
+    await message.reply("Ваша история поиска была очищена.")
+
+@dp.message(Command("quote"))
+async def cmd_quote(message: types.Message):
+    quotes = [
+        "«Голливуд — это место, где они продадут тебе шнурок от ботинка за 20 долларов, а потом скажут, что он стоил 100 долларов.» — Уоррен Битти",
+        "«Фильм — это жизнь с выключенным светом.» — Альфред Хичкок",
+        "«Кино — это искусство, которое позволяет людям пережить невозможное.» — Франсуа Трюффо",
+        "«Лучше бы я сделал всё как следует. Но я был слишком занят тем, чтобы снимать.» — Орсон Уэллс"
+    ]
+    quote = random.choice(quotes)
+    await message.reply(f"Цитата: {quote}")
 
 # Обработчик ошибок
 @dp.errors()
 async def error_handler(update: types.Update, exception: Exception):
     logging.error(f"Обновление {update} вызвало ошибку: {exception}")
     if hasattr(update, 'message'):
-        await update.message.reply("Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже.")
+        await update.message.reply("Произошла ошибка. Попробуйте снова!")
 
 # Основная функция для запуска бота
 async def main():
