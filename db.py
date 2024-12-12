@@ -33,6 +33,11 @@ class Database:
                 user_id INTEGER PRIMARY KEY,
                 search_count INTEGER DEFAULT 0
             )''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS movie_details (
+                search_query TEXT PRIMARY KEY,
+                movie_data TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
             conn.commit()
 
     def save_search_history(self, user_id, query):
@@ -47,6 +52,24 @@ class Database:
                                DO UPDATE SET search_count = search_count + 1''', (user_id,))
             conn.commit()
 
+    def save_movie_details(self, query, movie_data):
+        timestamp = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''INSERT INTO movie_details (search_query, movie_data, timestamp) 
+                               VALUES (?, ?, ?) 
+                               ON CONFLICT(search_query) 
+                               DO UPDATE SET movie_data = ?, timestamp = ?''',
+                           (query, movie_data, timestamp, movie_data, timestamp))
+            conn.commit()
+
+    def get_movie_details(self, query):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''SELECT movie_data FROM movie_details WHERE search_query = ?''', (query,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+
     def get_search_history(self, user_id, limit=10):
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -60,3 +83,13 @@ class Database:
             cursor.execute('''SELECT search_count FROM user_stats WHERE user_id = ?''', (user_id,))
             result = cursor.fetchone()
             return result[0] if result else 0
+
+    def get_top_searches(self, limit=10):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''SELECT search_query, COUNT(*) as frequency 
+                               FROM search_history 
+                               GROUP BY search_query 
+                               ORDER BY frequency DESC 
+                               LIMIT ?''', (limit,))
+            return cursor.fetchall()
