@@ -1,5 +1,7 @@
 # Cinema Bot
 
+[![DOI](https://zenodo.org/badge/900660123.svg)](https://doi.org/10.5281/zenodo.17264496)
+
 ![сinema-bot](https://github.com/user-attachments/assets/be280e49-d655-4326-a0f5-32e29867101d)
 
 **Cinema Bot** - это бот для поиска информации о фильмах и сериалах.
